@@ -2,9 +2,11 @@
 #include <avr/interrupt.h>
 
 // Pinos de controle da ponte H
-const int IN1 = 7;  // Pino de controle da direção 1
-const int IN2 = 8;  // Pino de controle da direção 2
-const int ENA = 9;  // Pino de habilitação do PWM
+const int R_PWM = 7;  // Pino PWM de controle da direção 1
+const int L_PWM = 8;  // Pino PWM de controle da direção 2
+
+const int R_ENA = 9;  // Pino de habilitação da direção R
+const int L_ENA = 10;  // Pino de habilitação da direção L
 
 // Pino do botão de controle externo
 const int botao = 2;  // Pino de interrupção para wake-up
@@ -12,21 +14,32 @@ const int botao = 2;  // Pino de interrupção para wake-up
 // Parâmetros de controle de movimento
 const unsigned long tempoTotal = 8000;            // Tempo total de abertura/fechamento (8s)
 const unsigned long tempoAceleracao = 2000;       // Tempo de aceleração/desaceleração (2s)
-const unsigned long tempoMaximoMovimento = tempoTotal - 2 * tempoAceleracao; // Tempo máximo em velocidade constante
+const unsigned long tempoMaximoMovimentacao = tempoTotal; // Tempo máximo "Padrão" de rerentencia
 const int maxVelocidade = 255;                     // Velocidade máxima do motor (PWM)
+
+// Parâmetros para Sensiblidade do sensor de corrente
+const float correnteMaximaMotor =20;
+const float limiteCorrenteAbertura = 5;
+const float limiteCorrenteFechamento = 5; 
+const float fatorDeConversaoCorrente = 5 / 1023 * correnteMaximaMotor; // 5 v
 
 // Variáveis de controle de estado
 unsigned long tempoInicio = 0;
-unsigned long tempoRestante = 0;
+unsigned long tempoMovimentacao = 0;
 int velocidadeAtual = 0;                // Velocidade do motor (0 a 255)
-bool estadoMotor = false;               // Estado do motor (ligado/desligado)
-bool movimentoAbrindo = true;           // Abertura (true) ou fechamento (false)
+bool motorEmMovimento = false;               // Estado do motor (ligado/desligado)
+bool movimentoAbrindo = false;           // Abertura (true) ou fechamento (false)
 
 void setup() {
   // Configurar pinos como saída
-  pinMode(IN1, OUTPUT);
-  pinMode(IN2, OUTPUT);
-  pinMode(ENA, OUTPUT);
+  pinMode(R_PWM, OUTPUT);
+  pinMode(L_PWM, OUTPUT);
+
+  pinMode(R_ENA, OUTPUT);
+  pinMode(L_ENA, OUTPUT);
+  digitalWrite(R_ENA, HIGH);
+  digitalWrite(L_ENA, HIGH);
+
 
   // Configurar o pino do botão como entrada com PULLUP interno
   pinMode(botao, INPUT_PULLUP);
@@ -44,85 +57,79 @@ void loop() {
   // Verificar se o botão foi pressionado
   bool sinalAtivo = digitalRead(botao) == LOW;
 
-  if (sinalAtivo && !estadoMotor) {
+  if (sinalAtivo && !motorEmMovimento) {
     // Iniciar movimento se o botão for pressionado e o motor estiver parado
-    iniciarMovimento();
-  } else if (sinalAtivo && estadoMotor) {
-    // Reverter movimento se o botão for pressionado enquanto o motor estiver ligado
-    reverterMovimento();
-  }
+    iniciarMovimento(tempoTotal);
+  } 
 
   // Verificar se o tempo total de operação foi atingido
-  if (estadoMotor && millis() - tempoInicio >= tempoTotal) {
+  if (motorEmMovimento && millis() - tempoInicio >= tempoTotal) {
     pararMotor();
     entrarModoSleep();
   }
 }
 
-void iniciarMovimento() {
-  estadoMotor = true;
+void iniciarMovimento(unsigned long tempoMovimentacao) {
+  motorEmMovimento = true;
   tempoInicio = millis();
-  tempoRestante = tempoTotal;
-
+  
   if (movimentoAbrindo) {
-    abrirTailgate(tempoRestante);
+    abrirTailgate(tempoMovimentacao);
   } else {
-    fecharTailgate(tempoRestante);
+    fecharTailgate(tempoMovimentacao);
   }
 }
 
-void reverterMovimento() {
+void reverterMovimento(unsigned long tempoMovimentacao) {
   movimentoAbrindo = !movimentoAbrindo;  // Inverte o sentido de abertura/fechamento
-  tempoRestante = tempoTotal - (millis() - tempoInicio);  // Calcula o tempo restante para reverter
-
   if (movimentoAbrindo) {
-    abrirTailgate(tempoRestante);
+    abrirTailgate(tempoMovimentacao);
   } else {
-    fecharTailgate(tempoRestante);
+    fecharTailgate(tempoMovimentacao);
   }
 }
 
 void abrirTailgate(unsigned long tempoRestante) {
-  controlarMotor(IN1, IN2, tempoRestante);  // Abrir no sentido correto
+  controlarMotor(L_PWM,R_PWM, tempoRestante);  // Abrir 
 }
 
 void fecharTailgate(unsigned long tempoRestante) {
-  controlarMotor(IN2, IN1, tempoRestante);  // Fechar no sentido reverso
+  controlarMotor(R_PWM,L_PWM, tempoRestante);  // Fechar 
 }
-void controlarMotor(int pinoSentido1, int pinoSentido2, unsigned long tempoTotal) {
-    digitalWrite(pinoSentido1, HIGH);
-    digitalWrite(pinoSentido2, LOW);
+void controlarMotor(int pinoSentido1,int pinoSentido2, unsigned long tempoTotal) {
+    analogWrite(pinoSentido1, LOW);
+    unsigned long tempoAteFimMovimento = tempoMaximoMovimentacao - (tempoMaximoMovimentacao - tempoTotal);
 
     unsigned long tempoDecorrido = 0;
 
     // Aceleração
-    tempoDecorrido += acelerarMotor(tempoTotal, tempoAceleracao);
+    tempoDecorrido += acelerarMotor(pinoSentido2,tempoAteFimMovimento, tempoAceleracao);
 
     // Manter velocidade máxima
-    tempoDecorrido += manterVelocidadeMaxima(tempoTotal, tempoDecorrido);
+    tempoDecorrido += manterVelocidadeMaxima(pinoSentido2,tempoAteFimMovimento, tempoDecorrido);
 
     // Desaceleração
-    desacelerarMotor(tempoTotal, tempoDecorrido);
+    desacelerarMotor(pinoSentido2,tempoAteFimMovimento, tempoDecorrido);
 }
 
-unsigned long acelerarMotor(unsigned long tempoTotal, unsigned long tempoAceleracao) {
+unsigned long acelerarMotor(int pinoSentido2,unsigned long tempoTotal, unsigned long tempoAceleracao) {
     unsigned long tempoDecorrido = 0;
     while (tempoDecorrido < tempoAceleracao && tempoDecorrido < tempoTotal) {
-        if (verificarSinalExterno()) return tempoDecorrido;  // Interrompe se sinal externo for detectado
-        ajustarVelocidade(tempoDecorrido, 0, tempoAceleracao, maxVelocidade);
+        if (verificarSinalExterno(tempoDecorrido)) return tempoDecorrido;  // Interrompe se sinal externo for detectado
+        ajustarVelocidade(pinoSentido2,tempoDecorrido, 0, tempoAceleracao, maxVelocidade);
         delay(30);
         tempoDecorrido += 30;
     }
     return tempoDecorrido;  // Retorna o tempo total decorrido durante a aceleração
 }
 
-unsigned long manterVelocidadeMaxima(unsigned long tempoTotal, unsigned long tempoDecorrido) {
+unsigned long manterVelocidadeMaxima(int pinoSentido2,unsigned long tempoTotal, unsigned long tempoDecorrido) {
     unsigned long tempoManter = tempoTotal - tempoDecorrido - tempoAceleracao;  // Cálculo do tempo restante
     if (tempoManter < 0) tempoManter = 0;  // Garante que o tempo não seja negativo
 
     while (tempoManter > 0) {
-        if (verificarSinalExterno()) return tempoDecorrido;  // Interrompe se sinal externo for detectado
-        ajustarVelocidade(tempoDecorrido, 0, tempoAceleracao, maxVelocidade);  // Mantém a velocidade máxima
+        if (verificarSinalExterno(tempoDecorrido)) return tempoDecorrido;  // Interrompe se sinal externo for detectado
+        ajustarVelocidade(pinoSentido2,tempoDecorrido, 0, tempoAceleracao, maxVelocidade);  // Mantém a velocidade máxima
         delay(30);
         tempoManter -= 30;  // Reduz o tempo restante
         tempoDecorrido += 30;  // Atualiza o tempo decorrido
@@ -130,12 +137,12 @@ unsigned long manterVelocidadeMaxima(unsigned long tempoTotal, unsigned long tem
     return tempoDecorrido;  // Retorna o tempo total decorrido após manter a velocidade máxima
 }
 
-void desacelerarMotor(unsigned long tempoTotal, unsigned long tempoDecorrido) {
+void desacelerarMotor(int pinoSentido2,unsigned long tempoTotal, unsigned long tempoDecorrido) {
     unsigned long tempoDesaceleracao = min(tempoTotal - tempoDecorrido, tempoAceleracao); // Limitar a desaceleração a 2000 ms
 
     while (tempoDecorrido < tempoTotal) {
-        if (verificarSinalExterno()) return;  // Interrompe se sinal externo for detectado
-        ajustarVelocidade(tempoTotal - tempoDecorrido, 0, tempoDesaceleracao, maxVelocidade);  // Desacelera o motor
+        if (verificarSinalExterno(tempoDecorrido)) return;  // Interrompe se sinal externo for detectado
+        ajustarVelocidade(pinoSentido2,tempoTotal - tempoDecorrido, 0, tempoDesaceleracao, maxVelocidade);  // Desacelera o motor
         delay(30);
         tempoDecorrido += 30;  // Atualiza o tempo decorrido
     }
@@ -144,25 +151,24 @@ void desacelerarMotor(unsigned long tempoTotal, unsigned long tempoDecorrido) {
 }
 
 
-void ajustarVelocidade(int tempoAtual, int inicio, int fim, int velocidadeFinal) {
+void ajustarVelocidade(int pinoSentido2,int tempoAtual, int inicio, int fim, int velocidadeFinal) {
   velocidadeAtual = map(tempoAtual, inicio, fim, 0, velocidadeFinal);
-  analogWrite(ENA, velocidadeAtual);
+  analogWrite(pinoSentido2, velocidadeAtual);
 }
 
-bool verificarSinalExterno() {
+bool verificarSinalExterno(unsigned long tempoDecorrido) {
   // Verifica se o botão foi pressionado durante a operação
   if (digitalRead(botao) == LOW) {
-    reverterMovimento();
+    reverterMovimento(tempoDecorrido);
     return true;
   }
   return false;
 }
 
 void pararMotor() {
-  digitalWrite(IN1, LOW);
-  digitalWrite(IN2, LOW);
-  analogWrite(ENA, 0);
-  estadoMotor = false;
+  analogWrite(R_PWM, LOW);
+  analogWrite(L_PWM, LOW);
+  motorEmMovimento = false;
 }
 
 void entrarModoSleep() {
