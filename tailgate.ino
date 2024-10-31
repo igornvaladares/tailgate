@@ -4,7 +4,7 @@
 #define    encoder_C1   3                     //Conexão C1 do encoder
 #define    encoder_C2   4                     //Conexão C2 do encoder
 byte      Encoder_C1Last;
-int       pulse_number;
+volatile int pulsos;
 boolean direction_m;
 
 
@@ -22,22 +22,24 @@ const int botao = 2;  // Pino de interrupção para wake-up
 
 // Pino do sensor corrente
 const int correnteEsquerdo = A1;  // Pino corrente esquerda
-const int correnteDireito = A2;  // Pino corrente direita
+const int correnteDireito = A0;  // Pino corrente direita
 const float sensibilidade = 0.1; // Sensibilidade (Quantidade de tensãp gerada por cada unidade de corrente- Cada Ampere de corrente, o sensor gerará 0.1V na saida)
-// Parâmetros de controle de movimento
-const unsigned long tempoMaximoMovimentacao = 7000;     // Tempo máximo "Padrão" de rerentencia
-const unsigned long tempoAceleracaoPadrao = 2000;       // Tempo de aceleração/desaceleração (1.5s)
-const unsigned long  tempoAteFimMovimento = tempoMaximoMovimentacao;  // Tempo total de abertura/fechamento (8s)
-const unsigned long frequenciaVelocidade = 30;       // intervalo em ms para reduzir ou aumementar a velocidade 
-// Parâmetros para Sensiblidade do sensor de corrente
-
 //const float correnteMaximaMotor =20;
-const float limiteCorrenteAbertura = 5;
-const float limiteCorrenteFechamento = 5; 
+const float limiteCorrenteAbertura = 25;
+const float limiteCorrenteFechamento = 25; 
+unsigned long tempoCorrenteAnterior =0;
 //const float fatorDeConversaoCorrente = 5 / 1023 * correnteMaximaMotor; // 5 v
 
+
+// Parâmetros de controle de movimento
+const unsigned long tempoMaximoMovimentacao = 8000;     // Tempo máximo "Padrão" de rerentencia
+const unsigned long tempoAceleracaoPadrao = 2000;       // Tempo de aceleração/desaceleração (2)
+const unsigned long  tempoAteFimMovimento = tempoMaximoMovimentacao;  // Tempo total de abertura/fechamento (8s)
+const unsigned long frequenciaVelocidade = 30;       // intervalo em ms para reduzir ou aumementar a velocidade 
+
 // Variáveis de controle de estado
-int velocidadeAtual = 0;                // Velocidade do motor (0 a 255)
+unsigned int velocidadeAtual = 0;                // Velocidade do motor (0 a 255)
+const unsigned velocidadeLimiteReferencia = 255;
 bool motorEmMovimento = false;               // Estado do motor (ligado/desligado)
 bool movimentoAbrindo = false;           // Abertura (true) ou fechamento (false)
 
@@ -47,11 +49,12 @@ const int intervaloBeep =500; // 1S
 unsigned long tempoBeepAnterior=0;
 
 // Controle de frequencia que calcula a velocidade do motor
-const int intervaloPulso =500; // 1S
+const float intervaloPulso =500; // 1S
 unsigned long tempoPulsoAnterior=0;
-float freq=0;float freqAnt=0;
-float desvioFrenquencia =100; // desvio para calcular a queda da valocidade 
+int pulsosAnt=0;
 
+float DESVIO_FREQUENCIA =50; // desvio para calcular a queda da valocidade 10%
+float menorVariacao =1000;
 
 
 void setup() {
@@ -74,100 +77,112 @@ void setup() {
   // Configurar interrupção para o botão (borda de descida)
   attachInterrupt(digitalPinToInterrupt(botao), wakeUp, FALLING);
 
-  
-  attachInterrupt(digitalPinToInterrupt(encoder_C1), count_pulses, CHANGE);   //Interrupção externa 3 por mudança de estado
-
+  tempoPulsoAnterior = millis();
 }
 
 void loop() {
   // Verificar se o botão foi pressionado
   if (lerEventoExterno(botao) && !motorEmMovimento) {
     // Iniciar movimento se o botão for pressionado e o motor estiver parado
-    iniciarMovimento(tempoAteFimMovimento);
+    iniciarMovimento(tempoAteFimMovimento,velocidadeLimiteReferencia); // 255 velocidade máxima
     
   } 
-    Serial.print("PULSO");
-  Serial.println(pulse_number);
   pararMotor();
   entrarModoSleep();
 
 }
 
-void iniciarMovimento(unsigned long tempoAteFimMovimento) {
+void iniciarMovimento(unsigned long tempoAteFimMovimento, int velocidadeLimite) {
   delay(300); //  debouce 
   motorEmMovimento = true;
+  tempoCorrenteAnterior = millis(); // Evitar leitura inicial
+
+  attachInterrupt(digitalPinToInterrupt(encoder_C1), count_pulses, FALLING);   //Interrupção externa 3 por mudança de estado
+  attachInterrupt(digitalPinToInterrupt(botao), wakeUp, FALLING);
+
   if (movimentoAbrindo) {
-    abrirTailgate(tempoAteFimMovimento);
+    abrirTailgate(tempoAteFimMovimento,velocidadeLimite);
   } else {
-    fecharTailgate(tempoAteFimMovimento);
+    fecharTailgate(tempoAteFimMovimento,velocidadeLimite);
   }
 }
 
 void reverterMovimento(unsigned long tempoRestante) {
 
-  
-  pararMotor();
 // Se houver multiplas reversos, o tempo de movimento vai se ajustando.
 // tempoRestante tempo que restaria para completar o movimento se não fosse interrompido.
 // tempoAteFimMovimento   novo tempo que agora falta para completatar o movimento, por causa da inversão
  unsigned long tempoAteFimMovimento = (tempoMaximoMovimentacao -  tempoRestante); 
+
+  int velocidadeLimite = velocidadeLimiteReferencia;
+  if (tempoAteFimMovimento <= tempoAceleracaoPadrao){// Está acelerando ou Desaletando
+     velocidadeLimite = velocidadeAtual;   // Se acelerou até X na reversão deve ir até X também
+  }//else tempoAteFimMovimento=tempoAteFimMovimento - tempoAceleracaoPadrao;
+
+  
+  
+  pararMotor();
+
   Serial.print("REVERTENDO por: ");
   Serial.print(tempoAteFimMovimento);
-  Serial.print(" Restava : ");
-  Serial.println(tempoRestante);
+  Serial.print(" Ate: ");
+  Serial.println(velocidadeLimite);
+//  Serial.print(" Restava : ");
+//  Serial.println(tempoRestante);
 
   movimentoAbrindo = !movimentoAbrindo;  // Inverte o sentido de abertura/fechamento
   if (tempoAteFimMovimento<=0) tempoAteFimMovimento = tempoMaximoMovimentacao;    // Garantir na primeira movimentação que o tempo será o correto
   
-  iniciarMovimento(tempoAteFimMovimento);
+  iniciarMovimento(tempoAteFimMovimento,velocidadeLimite);
   
 }
 
-void abrirTailgate(unsigned long tempoAteFimMovimento) {
+void abrirTailgate(unsigned long tempoAteFimMovimento,int velocidadeLimite) {
+  
   Serial.print("ABRINDO por: ");
-  controlarMotor(L_PWM,R_PWM, tempoAteFimMovimento);  // Abrir 
+  controlarMotor(L_PWM,R_PWM, tempoAteFimMovimento,velocidadeLimite);  // Abrir 
 
 }
 
-void fecharTailgate(unsigned long tempoAteFimMovimento) {
+void fecharTailgate(unsigned long tempoAteFimMovimento, int velocidadeLimite) {
    Serial.print("FECHANDO por: ");
-
-  controlarMotor(R_PWM,L_PWM, tempoAteFimMovimento);  // Fechar 
+   controlarMotor(R_PWM,L_PWM, tempoAteFimMovimento,velocidadeLimite);  // Fechar 
 }
-void controlarMotor(int pinoSentido1,int pinoSentido2, unsigned long tempoAteFimMovimento) {
-    //analogWrite(pinoSentido1, LOW);
-    Serial.println(tempoAteFimMovimento);
-    analogWrite(pinoSentido1, LOW);
-    analogWrite(pinoSentido2, HIGH);
+void controlarMotor(int pinoSentido1,int pinoSentido2, unsigned long tempoAteFimMovimento, int velocidadeLimite) {
+
+    digitalWrite(pinoSentido1, LOW);
+    digitalWrite(pinoSentido2, HIGH);
     unsigned long tempoDecorrido = 0;
 
     // Aceleração
-    //tempoDecorrido += acelerarMotor(pinoSentido2,tempoAteFimMovimento, tempoAceleracao);
-    tempoDecorrido += acelerarMotor(tempoAteFimMovimento);
+    tempoDecorrido += acelerarMotor(tempoAteFimMovimento,velocidadeLimite);
   // Manter velocidade máxima
-    //tempoDecorrido += manterVelocidadeMaxima(pinoSentido2,tempoAteFimMovimento, tempoDecorrido);
     tempoDecorrido = manterVelocidadeMaxima(tempoAteFimMovimento, tempoDecorrido);
     // Desaceleração
-    //desacelerarMotor(pinoSentido2,tempoAteFimMovimento, tempoDecorrido);
-    desacelerarMotor(tempoAteFimMovimento, tempoDecorrido);
+    desacelerarMotor(tempoAteFimMovimento, tempoDecorrido,velocidadeLimite);
 
 
 }
 
-unsigned long acelerarMotor(unsigned long tempoAteFimMovimento) {
+unsigned long acelerarMotor(unsigned long tempoAteFimMovimento, int velocidadeLimite) {
     unsigned long tempoDecorrido = 0;
     unsigned long tempoAceleracao = min(tempoAceleracaoPadrao,tempoAteFimMovimento);
-    Serial.print("VELOCIDADE ACE:");
+   // Serial.print(" TEMPO ACE: ");
+   // Serial.print(tempoAceleracao);
+   // Serial.print(" TEMPO ATE FIM: ");
+   // Serial.print(tempoAteFimMovimento);
+    
     while ((tempoDecorrido <= tempoAceleracao) && motorEmMovimento) {
         beep();
-        if (verificarSinalExternoOuObstaculo(tempoAteFimMovimento-tempoDecorrido)) pararMotor();  // Interrompe se sinal externo for detectado
-        ajustarVelocidade(tempoDecorrido, tempoAceleracao);
+        if (verificarSinalExterno(tempoAteFimMovimento-tempoDecorrido)
+           || verificarObstaculo(tempoAteFimMovimento-tempoDecorrido))
+                pararMotor();  // Interrompe se sinal externo for detectado
+        ajustarVelocidade(tempoDecorrido, tempoAceleracao,velocidadeLimite);
         delay(frequenciaVelocidade);
         tempoDecorrido += frequenciaVelocidade;
-
     }
-    Serial.print("ACELEROU por:");
-    Serial.println(tempoDecorrido);
+   // Serial.print("ACELEROU por:");
+   // Serial.println(tempoDecorrido);
     return tempoDecorrido;  // Retorna o tempo total decorrido durante a aceleração
 }
 
@@ -175,13 +190,15 @@ unsigned long manterVelocidadeMaxima(unsigned long tempoAteFimMovimento, unsigne
 
     long tempoManter = tempoAteFimMovimento - tempoDecorrido - tempoAceleracaoPadrao;  // Cálculo do tempo restante
     if (tempoManter < 0) tempoManter = 0;  // Garante que o tempo não seja negativo
+     Serial.println("");
      Serial.print("MANTER por:");
-    Serial.println(tempoManter);
+     Serial.println(tempoManter);
     
-
     while ((tempoManter > 0) && motorEmMovimento) {
         beep();
-        if (verificarSinalExternoOuObstaculo(tempoAteFimMovimento-tempoDecorrido)) pararMotor();  // Interrompe se sinal externo for detectado
+        if (verificarSinalExterno(tempoAteFimMovimento-tempoDecorrido) 
+          ||  verificarObstaculo(tempoAteFimMovimento-tempoDecorrido))
+         pararMotor();  // Interrompe se sinal externo for detectado
         delay(frequenciaVelocidade);
         tempoManter -= frequenciaVelocidade;  // Reduz o tempo restante
         tempoDecorrido +=frequenciaVelocidade;  // Atualiza o tempo decorrido
@@ -190,68 +207,88 @@ unsigned long manterVelocidadeMaxima(unsigned long tempoAteFimMovimento, unsigne
     return tempoDecorrido;  // Retorna o tempo total decorrido após manter a velocidade máxima
 }
 
-void desacelerarMotor(unsigned long tempoAteFimMovimento, unsigned long tempoDecorrido) {
+void desacelerarMotor(unsigned long tempoAteFimMovimento, unsigned long tempoDecorrido, int velocidadeLimite) {
   
     unsigned long tempoDesaceleracao = min(tempoAteFimMovimento - tempoDecorrido, tempoAceleracaoPadrao); // Limitar a desaceleração a 2000 ms ou tempo restante
     Serial.print("DESACELERANDO  por:");
     Serial.println(tempoDesaceleracao);
-
-    Serial.print("VELOCIDADE DESACE:");
     while (tempoDecorrido <= tempoAteFimMovimento && motorEmMovimento) {
         beep();
-        if (verificarSinalExternoOuObstaculo(tempoAteFimMovimento-tempoDecorrido)) pararMotor();  // Interrompe se sinal externo for detectado
-        ajustarVelocidade(tempoAteFimMovimento - tempoDecorrido, tempoDesaceleracao);  // Desacelera o motor
+        if (verificarSinalExterno(tempoAteFimMovimento-tempoDecorrido) 
+          || verificarObstaculo(tempoAteFimMovimento-tempoDecorrido))
+            pararMotor();  // Interrompe se sinal externo for detectado
+        ajustarVelocidade(tempoAteFimMovimento - tempoDecorrido, tempoDesaceleracao,velocidadeLimite);  // Desacelera o motor
         delay(frequenciaVelocidade);
         tempoDecorrido += frequenciaVelocidade;  // Atualiza o tempo decorrido
-
     }
-
-    //pararMotor();  // Para o motor ao final do ciclo
 }
 
 
-void ajustarVelocidade(int tempoAteFimMovimento, int fim) {
+void ajustarVelocidade(int tempoAteFimMovimento, int fim, int velocidadeLimite) {
   
-  velocidadeAtual = map(tempoAteFimMovimento, 0, fim, 0, 255); //3000,0, 2000, 0  ,255
-  //analogWrite(pinoSentido2, velocidadeAtual);
+  velocidadeAtual = map(tempoAteFimMovimento, 0, fim, 0, velocidadeLimite); //3000,0, 2000, 0  ,255
+
   if (motorEmMovimento) {
+    Serial.println("");
     Serial.print(velocidadeAtual);
     Serial.print("A|");
+   
   }
-
-  if (motorEmMovimento) analogWrite(PWM, velocidadeAtual); // Pode completar o movimento de reverso pelo verificarSinalExterno() e parar
+  if (motorEmMovimento)  analogWrite(PWM, velocidadeAtual); 
 }
 
-bool verificarSinalExternoOuObstaculo(unsigned long tempoRestante) {
-  
-  float limite = movimentoAbrindo ? limiteCorrenteAbertura: limiteCorrenteFechamento;
-   // VERIFICAR PULSO com millis
-  if (lerEventoExterno(botao) // Verifica se o botão foi pressionado durante a operação
- // || lerCorrente(correnteEsquerdo)> limite // Verifica se a corente é maior q o limite
- // || lerCorrente(correnteDireito)> limite) // Verifica se a corente é maior q o limite
-    || caiuFrequencia()
-  )
-  { 
+bool verificarSinalExterno(unsigned long tempoRestante) {
+
+  if (lerEventoExterno(botao)){ 
     reverterMovimento(tempoRestante);
     return true;
   }
   return false;
   
 }
-bool caiuFrequencia(){
-
-    return (freqAnt > (freq + desvioFrenquencia));
-
+bool verificarObstaculo(unsigned long tempoRestante) {
+  // Cada movimento abrindo ou fechando terá seu limite máximo de correte
+  float limite = movimentoAbrindo ? limiteCorrenteAbertura: limiteCorrenteFechamento;
+    if (lerCorrente(correnteEsquerdo,correnteDireito) > limite  // Verifica se a corente é maior q o limite
+        //temObstaculo()
+        ){ 
+      reverterMovimento(tempoRestante);
+      return true;
+    }
+  return false;
+  
 }
-void frequenciaPulso(){
+
+bool temObstaculo(){
+  bool caiu = false;
+ 
 
   if ((millis() - tempoPulsoAnterior) >= intervaloPulso){
-    freq =   pulse_number / intervaloPulso;
-    freqAnt = freq;
-    pulse_number=0;
-    tempoPulsoAnterior =millis();
-  }
+    float variacao =  1 - (pulsosAnt/pulsos);
    
+    if (variacao < 0){ // DEsacelerou
+       // Serial.print("ATUAL:");
+       // Serial.println(abs(variacao * 100));
+        if (abs(variacao * 100) < menorVariacao)  {
+            menorVariacao = abs(variacao * 100);
+        }
+        caiu =  abs(variacao * 100) > DESVIO_FREQUENCIA;
+        if (caiu){
+            Serial.print("OBSTACULO");
+            detachInterrupt(digitalPinToInterrupt(encoder_C1));   //Interrupção externa 3 por mudança de estado
+            detachInterrupt(digitalPinToInterrupt(botao));
+        }
+    }
+    pulsosAnt = pulsos;
+    pulsos=0;
+    tempoPulsoAnterior =millis();
+    }
+    
+    if (pulsosAnt==0){
+        pulsosAnt = pulsos;
+    } 
+
+  return caiu;
 }
 void beep(){
 
@@ -260,7 +297,7 @@ void beep(){
       tempoBeepAnterior = millis();
       bipar = !bipar;
       if (bipar){
-      //  Serial.println("BEEP");
+       // Serial.println("BEEP");
       }
   }
    
@@ -269,17 +306,43 @@ void beep(){
 
 void noBeep(){
 
-       digitalWrite(SAIDAPULSO, LOW);
+   digitalWrite(SAIDAPULSO, LOW);
 
 }
-float lerCorrente(int pinCorrente){
 
-    int leituraAnalogica =  analogRead(pinCorrente);
-    float tensao = leituraAnalogica * (5 /1023.0); // 5V máxima voltagem do pino que corresponde a 1023.0
+float lerCorrente(int pinCorrenteD,int pinCorrenteE){
+
+  float tensao = 0;
+  
+  float tensaoA = leituraMediaCorrente(pinCorrenteD) * (5 /1023.0); // 5V máxima voltagem do pino que corresponde a 1023.0
+  float tensaoB = leituraMediaCorrente(pinCorrenteE) * (5 /1023.0); // 5V máxima voltagem do pino que corresponde a 1023.0
+  
+  if ((millis() - tempoCorrenteAnterior) >= intervaloPulso){
+
+     
+     tensao = max(tensaoA,tensaoB);
+    Serial.println("");
+    Serial.print(" CORRENTE: ");
+   Serial.print(tensao / sensibilidade);
+     tempoCorrenteAnterior = millis();
+
+  }
+
     return tensao / sensibilidade;
 
 }
 
+float leituraMediaCorrente(int pinCorrente){
+
+  long soma=0;
+   for(int i=1;i<=10;i++){
+       soma = soma + analogRead(pinCorrente);
+      
+  }
+
+  return soma/10;
+
+}
 int lerEventoExterno(int pin_entrada) {
 
   int estado;
@@ -297,25 +360,19 @@ int lerEventoExterno(int pin_entrada) {
  }
 
 void pararMotor() {
+  Serial.println("");
   Serial.println("PAROU");
   noBeep();
-
-//  analogWrite(R_PWM, LOW);
-//  analogWrite(L_PWM, LOW);
-//  analogWrite(R_PWM, LOW);
-//  analogWrite(L_PWM, LOW);
-  analogWrite(R_PWM, LOW);
-  analogWrite(L_PWM, LOW);
-  Serial.print("VELOCIDADE ATUAL:");
-  ajustarVelocidade(0,0);
-
-
+  digitalWrite(R_PWM, LOW);
+  digitalWrite(L_PWM, LOW);
+  ajustarVelocidade(0,0,0);
   motorEmMovimento = false;
+  delay(intervaloPulso);
 }
 
 void entrarModoSleep() {
   movimentoAbrindo=!movimentoAbrindo;
-  Serial.println("DORMIU");
+ // Serial.println("DORMIU");
 
   set_sleep_mode(SLEEP_MODE_PWR_DOWN);
   sleep_enable();
@@ -325,12 +382,8 @@ void entrarModoSleep() {
 
 void count_pulses()
 {
-
-  if (digitalRead(encoder_C1)){
-      pulse_number++;           //incrementa número do pulso se direction limpa
-  }       //Lê estado de encoder_C1 e armazena em Lstate
-  
-  
+   pulsos++; //incrementa número do pulso se direction limpa
+   
 } //end count_pulses
 void wakeUp() {
   sleep_disable();  // Desabilita o sleep quando acorda
