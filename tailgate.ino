@@ -1,32 +1,26 @@
 #include <avr/sleep.h>
-#include <avr/interrupt.h>
-
-volatile int clicks;
-boolean direction_m;
-
-const int botao = 2;  // Pino de interrupção para wake-up
-const int sensorMala = 5;  // Pino de leitura se mala aberta ou fechada
-
-// Pinos de controle da ponte H
-const int R_PWM = 7;  // Pino PWM de controle da direção 1
-const int L_PWM = 8;  // Pino PWM de controle da direção 2
-
-const int SAIDAPULSO = 10;  // Pino saida pulsada
-const int PWM = 11;  // Ligar os pinos R_ENA e L_ENA no D11 do arduino
-const int _5V = 12;  // Pino 5V lógico
-const int GND = 13;  // Pino GND lógico
-
+#include <EnableInterrupt.h>
+#include <avr/power.h>
 
 
 // Pino do botão de controle externo
+const int pinAcaoExterna12V = 5;  // Pino de interrupção para wake-up
+const int pinSensorMala = 2;  // Pino de leitura se mala aberta ou fechada
+const int pinBotao = 4;  // Pino de leitura botao da mala
+
+// Pinos de controle da ponte H
+const int R_PWM = 12;  // Pino PWM de controle da direção 1
+const int L_PWM = 13;  // Pino PWM de controle da direção 2
+const int PWM = 11;  // Ligar os pinos R_ENA e L_ENA no D11 do arduino
+
+const int pinBeep = 9;  // Pino saida beep
 
 // Pino do sensor corrente
 const int pinCorrenteEsquerdo = A1;  // Pino corrente esquerda
 const int pinCorrenteDireito = A0;  // Pino corrente direita
-const int pinTensao = A2;  // Pino tensao trabalho
+const int pinTensao = A3;  // Pino tensao trabalho
 
 const float sensibilidade = 0.1; // Sensibilidade (Quantidade de tensãp gerada por cada unidade de corrente- Cada Ampere de corrente, o sensor gerará 0.1V na saida)
-//const float correnteMaximaMotor =20;
 const float limiteCorrenteAbertura = 51;
 const float limiteCorrenteFechamento = 46; 
 long tempoCorrenteAnterior =0;
@@ -44,40 +38,33 @@ int forcaAtual = 0;                // Velocidade do motor (0 a 254)
 bool motorEmMovimento = false;               // Estado do motor (ligado/desligado)
 bool abrir = false;           // Abertura (true) ou fechamento (false)
 // Controle de frequencia que calcula a velocidade do motor
-const float intervaloPulso =500; // 1S
-long tempoPulsoAnterior=0;
+const float intervaloBeep =500; // 1S
+long tempoBeepAnterior=0;
 int clicksAnt=0;
-
-#define DESVIO_FREQUENCIA 50; // desvio para calcular a queda da valocidade 10%
-float menorVariacao =1000;
-
 
 void setup() {
   Serial.begin(9600);  // Para debug (opcional)
-   Serial.print("Tensão :");
-   Serial.println(obterTensaoDeTrabalho());
-   // Configurar pinos como saída
+    // Configurar pinos como saída
   pinMode(R_PWM, OUTPUT);
   pinMode(L_PWM, OUTPUT);
-  pinMode(SAIDAPULSO, OUTPUT);
   pinMode(PWM, OUTPUT);
-  pinMode(_5V, OUTPUT);
-  pinMode(GND, OUTPUT);
   
- 
-  digitalWrite(_5V, HIGH);
-  digitalWrite(GND, LOW);
-
+  pinMode(pinBeep, OUTPUT);
+  
   beep();
   delay(500);
   noBeep();
   // Configurar o pino do botão como entrada com PULLUP interno
-  pinMode(botao, INPUT);
-  pinMode(sensorMala, INPUT_PULLUP);
+  pinMode(pinAcaoExterna12V, INPUT_PULLUP);
+  pinMode(pinBotao, INPUT_PULLUP);
+  pinMode(pinSensorMala, INPUT_PULLUP);
  // Configurar interrupção para o botão (borda de descida)
-  attachInterrupt(digitalPinToInterrupt(botao), acordar, RISING);
+  enableInterrupt(pinAcaoExterna12V, acaoExterna12V, RISING);  
+  enableInterrupt(pinBotao, acaoExterna12V, RISING);  
 
-  tempoPulsoAnterior = millis();
+  //Serial.print("Mala :");
+  //Serial.print(digitalRead(pinSensorMala));
+  tempoBeepAnterior = millis();
 }
 
 
@@ -85,8 +72,6 @@ void iniciarMovimento(  float tempoAteFimMovimento =TEMPO_MAXIMO_MOVIMENTACAO, i
   delay(250); //  debouce 
   motorEmMovimento = true;
   tempoCorrenteAnterior = millis(); // Evitar leitura inicial
-  attachInterrupt(digitalPinToInterrupt(encoder_C1), clickBotao, FALLING);   //Interrupção externa 3 por mudança de estado
-  attachInterrupt(digitalPinToInterrupt(botao), acordar, RISING);
   calibrarSentidoMotor(abrir);  
   if (abrir) {
     abrirTailgate(tempoAteFimMovimento/2.0,forcaLimite,reversoes);// QUando diminui o tempoAteFimMovimento siginifica diminuir o tempo na força maxima
@@ -96,12 +81,26 @@ void iniciarMovimento(  float tempoAteFimMovimento =TEMPO_MAXIMO_MOVIMENTACAO, i
 
 }
 void loop() {
+  //  Serial.print("Tensão :");
+   //Serial.println(obterTensaoDeTrabalho());
+    Serial.print("MALA :");
+  Serial.println(digitalRead(pinSensorMala));
+
   // Verificar se o botão foi pressionado
-  if (lerEventoExterno(botao)){
+  if (lerEventoExterno(pinAcaoExterna12V)){
     abrir = isFechado(); 
     // Iniciar movimento se o botão for pressionado e o motor estiver parado
     iniciarMovimento();
   } 
+
+// BOTAO SÓ PARA FECHAR.
+ if (lerEventoExterno(pinBotao) && isAberto()){
+    abrir = isFechado(); 
+    // Iniciar movimento se o botão for pressionado e o motor estiver parado
+    iniciarMovimento();
+  } 
+
+  
   pararMotor();
   entrarModoSleep();
 
@@ -146,15 +145,23 @@ void reverterMovimento(  float tempoRestante, int reversoes =0) {
   
 }
 void abrirTailgate(float tempoAteFimMovimento,int forcaLimite,int reversoes) {
-    Serial.print("ABRINDO por: ");
+   // Serial.print("ABRINDO por: ");
     long tempoDecorrido=0;
+    long forcaArrancadaFinal = 50;
+    long tempoVariavel= 600;
     if (reversoes==0){
-       long tempoAteFim = contrololarTempoArranqueInicial();       
-       tempoDecorrido = acelerarMotor(tempoAteFim,255,reversoes);
+       long tempoAceleracaoMaxima = 150; // Tempo até atingir a força máxima
+       if (obterTensaoDeTrabalho()> 12.3){
+          tempoVariavel=0;
+          tempoAceleracaoMaxima = 1000;
+          forcaArrancadaFinal=40;
+       }
+       tempoDecorrido = acelerarMotor(tempoAceleracaoMaxima,255,reversoes); // 1000 ou 600
+       
     } 
-    tempoDecorrido = tempoDecorrido + 1700; // dininuir o tempo do manter
+    tempoDecorrido = tempoDecorrido - tempoVariavel + 1700; // dininuir o tempo do manter
     // Manter velocidade máxima
-    //tempoDecorrido = 2850 (2500)
+    //tempoDecorrido = 2700 (1250)
     tempoDecorrido = manterVelocidadeAtual(tempoAteFimMovimento, reversoes,tempoDecorrido);
     // Desacelerar
    // tempoDecorrido = 3250 ;
@@ -163,7 +170,7 @@ void abrirTailgate(float tempoAteFimMovimento,int forcaLimite,int reversoes) {
     //tempoDecorrido = 5250 
    
     // ARRAQNEU FINAL
-    acelerarMotor(tempoAteFimMovimento,40,reversoes); //Acelera 1500 para velocidade 40
+    acelerarMotor(tempoAteFimMovimento,forcaArrancadaFinal,reversoes); //Acelera 1500 para velocidade 40
     tempoDecorrido = tempoDecorrido - 3000; // Tira 3s para manter 1s com velocidade de 40
     manterVelocidadeAtual(tempoAteFimMovimento, reversoes,tempoDecorrido);
 
@@ -205,8 +212,8 @@ long acelerarMotor(float tempoAteFimMovimento, int forcaLimite, int reversoes) {
 }
 
 float manterVelocidadeAtual(  float tempoAteFimMovimento,  int reversoes,float tempoDecorrido) {
-    //tempoAteFimMovimento 5250 - 2850 - 2000
-    //tempoManter = 400
+    //tempoAteFimMovimento 5250 - 2700 - 2000
+    //tempoManter = 500
     if (tempoDecorrido < 0 ) tempoDecorrido = 0;  // Garante que o tempo não seja negativo
     float tempoManter = tempoAteFimMovimento - tempoDecorrido - TEMPO_DESACELERACAO_PADRAO;  // Cálculo do tempo restante
     if (tempoManter < 0 ) tempoManter = 0;  // Garante que o tempo não seja negativo
@@ -275,7 +282,7 @@ void ajustarVelocidade(float tempoAteFimMovimento, int fim, int forcaLimite) {
 
 bool verificarSinalExterno(  float tempoRestante) {
 
-  if (lerEventoExterno(botao)){ 
+  if (lerEventoExterno(pinAcaoExterna12V)|| lerEventoExterno(pinBotao) ){ 
     reverterMovimento(tempoRestante);
     return true;
   }
@@ -298,13 +305,13 @@ bool verificarObstaculo(  float tempoRestante, int reversoes) {
 
 void beep(){
 
-  digitalWrite(SAIDAPULSO, HIGH);
+  digitalWrite(pinBeep, HIGH);
   
 }
 
 void noBeep(){
 
-   digitalWrite(SAIDAPULSO, LOW);
+   digitalWrite(pinBeep, LOW);
 
 }
 
@@ -314,7 +321,7 @@ float lerCorrente(int pinCorrenteD,int pinCorrenteE){
   float tensaoA = leituraMediaAnologica(pinCorrenteD) * (5 /1023.0); // 5V máxima voltagem do pino que corresponde a 1023.0
   float tensaoB = leituraMediaAnologica(pinCorrenteE) * (5 /1023.0); // 5V máxima voltagem do pino que corresponde a 1023.0
   
-  if ((millis() - tempoCorrenteAnterior) >= intervaloPulso){
+  if ((millis() - tempoCorrenteAnterior) >= intervaloBeep){
      tensao = max(tensaoA,tensaoB);
      tempoCorrenteAnterior = millis();
   }
@@ -328,29 +335,31 @@ void pararMotor() {
   noBeep();
   ajustarVelocidade(0,0,0);
   motorEmMovimento = false;
-  delay(intervaloPulso);
+  delay(intervaloBeep);
 }
 
 void entrarModoSleep() {
+
+  power_adc_disable();
+  power_spi_disable();
+  power_timer0_disable();
+  power_twi_disable();
+  power_usart0_disable();
+  
   set_sleep_mode(SLEEP_MODE_PWR_DOWN);
   sleep_enable();
   sleep_cpu();  // Coloca o Arduino em modo sleep até interrupção
 }
 
-void clickBotao()
-{
-   clicks++; //incrementa número do pulso se direction limpa
-   
-} //end clickBotao
-void acordar() {
+void acaoExterna12V() {
   sleep_disable();  // Desabilita o sleep quando acorda
+  power_all_enable();
 }
 float obterTensaoDeTrabalho(){
   
   
   float valorAnalogico = leituraMediaAnologica(analogRead(pinTensao));
-  float tensaoDoPin =  (valorAnalogico /1023.0) * 5;
-  return  tensaoDoPin * 5;
+  return (valorAnalogico *25)/1024;
  
  }
 
@@ -374,12 +383,12 @@ void calibrarSentidoMotor(bool abrindo){
 int lerEventoExterno(int pin_entrada) {
 
   int estado;
-  if (digitalRead(pin_entrada) == HIGH)
+  if (digitalRead(pin_entrada) == LOW)
   {
     estado = digitalRead(pin_entrada);
-    if (estado == HIGH)
+    if (estado == LOW)
     {
-      while (estado == HIGH)
+      while (estado == LOW)
         estado = digitalRead(pin_entrada);
       return 1;
     }  
@@ -389,7 +398,13 @@ int lerEventoExterno(int pin_entrada) {
 
 bool isFechado(){
 
-  return digitalRead(sensorMala) == HIGH;
+  return digitalRead(pinSensorMala) == HIGH;
+
+}
+
+bool isAberto(){
+
+  return digitalRead(pinSensorMala) == LOW;
 
 }
 
@@ -406,20 +421,4 @@ float leituraMediaAnologica(int pinAnalogico){
     }
   return soma/10;
 
-}
-void freiar(float tempoAteFimMovimento, int forcaLimite) {
-    calibrarSentidoMotor(!abrir);
-  
-    tempoAteFimMovimento = max(TEMPO_ACELERACAO_PADRAO,tempoAteFimMovimento);
-
-    Serial.print("Freiar  por:");
-    Serial.println(tempoAteFimMovimento);
-    int tempoDecorrido =0;
-    while (tempoDecorrido <= tempoAteFimMovimento && motorEmMovimento) {
-        
-        ajustarVelocidade(255, 255,forcaLimite);  // Desacelera o motor
-        delay(frequenciaVelocidade);
-        tempoDecorrido += frequenciaVelocidade;  // Atualiza o tempo decorrido
-    }
-    pararMotor();
 }
