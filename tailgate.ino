@@ -36,10 +36,12 @@ int forcaAtual = 0;                // Velocidade do motor (0 a 254)
 #define FORCA_LIMITE_REFERENTE 180
 
 bool motorEmMovimento = false;               // Estado do motor (ligado/desligado)
-bool abrir = false;           // Abertura (true) ou fechamento (false)
+bool abrir = true;           // Abertura (true) ou fechamento (false)
 // Controle de frequencia que calcula a velocidade do motor
 const float intervaloBeep =500; // 1S
 long tempoBeepAnterior=0;
+long tempoAberturaAnterior = 0;
+
 int clicksAnt=0;
 
 void setup() {
@@ -62,9 +64,9 @@ void setup() {
   enableInterrupt(pinAcaoExterna12V, acaoExterna12V, RISING);  
   enableInterrupt(pinBotao, acaoExterna12V, RISING);  
 
-  //Serial.print("Mala :");
-  //Serial.print(digitalRead(pinSensorMala));
   tempoBeepAnterior = millis();
+  tempoAberturaAnterior = millis();
+
 }
 
 
@@ -81,26 +83,19 @@ void iniciarMovimento(  float tempoAteFimMovimento =TEMPO_MAXIMO_MOVIMENTACAO, i
 
 }
 void loop() {
-  //  Serial.print("Tensão :");
-   //Serial.println(obterTensaoDeTrabalho());
-    Serial.print("MALA :");
-  Serial.println(digitalRead(pinSensorMala));
+  abrir = isFechado(); 
 
   // Verificar se o botão foi pressionado
   if (lerEventoExterno(pinAcaoExterna12V)){
-    abrir = isFechado(); 
     // Iniciar movimento se o botão for pressionado e o motor estiver parado
     iniciarMovimento();
   } 
 
-// BOTAO SÓ PARA FECHAR.
- if (lerEventoExterno(pinBotao) && isAberto()){
-    abrir = isFechado(); 
+// BOTAO SÓ PARA FECHAR
+ if (!abrir && lerEventoExterno(pinBotao)){
     // Iniciar movimento se o botão for pressionado e o motor estiver parado
     iniciarMovimento();
   } 
-
-  
   pararMotor();
   entrarModoSleep();
 
@@ -147,21 +142,21 @@ void reverterMovimento(  float tempoRestante, int reversoes =0) {
 void abrirTailgate(float tempoAteFimMovimento,int forcaLimite,int reversoes) {
    // Serial.print("ABRINDO por: ");
     long tempoDecorrido=0;
-    long forcaArrancadaFinal = 50;
+    long forcaArrancadaFinal = 40;
     long tempoVariavel= 600;
     if (reversoes==0){
-       long tempoAceleracaoMaxima = 150; // Tempo até atingir a força máxima
-       if (obterTensaoDeTrabalho()> 12.3){
+       long tempoAceleracaoMaxima = 250; // Tempo até atingir a força máxima
+       if (obterTensaoDeTrabalho()> 12.5){
           tempoVariavel=0;
           tempoAceleracaoMaxima = 1000;
-          forcaArrancadaFinal=40;
+          
        }
-       tempoDecorrido = acelerarMotor(tempoAceleracaoMaxima,255,reversoes); // 1000 ou 600
+       tempoDecorrido = acelerarMotor(tempoAceleracaoMaxima,255,reversoes); // 1000 ou 250
        
     } 
     tempoDecorrido = tempoDecorrido - tempoVariavel + 1700; // dininuir o tempo do manter
     // Manter velocidade máxima
-    //tempoDecorrido = 2700 (1250)
+    //tempoDecorrido = 2700 (1550)
     tempoDecorrido = manterVelocidadeAtual(tempoAteFimMovimento, reversoes,tempoDecorrido);
     // Desacelerar
    // tempoDecorrido = 3250 ;
@@ -170,7 +165,7 @@ void abrirTailgate(float tempoAteFimMovimento,int forcaLimite,int reversoes) {
     //tempoDecorrido = 5250 
    
     // ARRAQNEU FINAL
-    acelerarMotor(tempoAteFimMovimento,forcaArrancadaFinal,reversoes); //Acelera 1500 para velocidade 40
+    acelerarMotor(tempoAteFimMovimento,forcaArrancadaFinal,reversoes); //Acelera 1500ms na velocidade 40
     tempoDecorrido = tempoDecorrido - 3000; // Tira 3s para manter 1s com velocidade de 40
     manterVelocidadeAtual(tempoAteFimMovimento, reversoes,tempoDecorrido);
 
@@ -342,7 +337,7 @@ void entrarModoSleep() {
 
   power_adc_disable();
   power_spi_disable();
-  power_timer0_disable();
+  //power_timer0_disable();
   power_twi_disable();
   power_usart0_disable();
   
@@ -352,8 +347,8 @@ void entrarModoSleep() {
 }
 
 void acaoExterna12V() {
-  sleep_disable();  // Desabilita o sleep quando acorda
   power_all_enable();
+  sleep_disable();  // Desabilita o sleep quando acorda
 }
 float obterTensaoDeTrabalho(){
   
@@ -398,17 +393,31 @@ int lerEventoExterno(int pin_entrada) {
 
 bool isFechado(){
 
-  return digitalRead(pinSensorMala) == HIGH;
+  return !isAberto();
 
 }
 
 bool isAberto(){
+  
+  bool aberto = digitalRead(pinSensorMala)==LOW;
 
-  return digitalRead(pinSensorMala) == LOW;
+  tempoAberturaAnterior = millis();
+  if (aberto){
+    while ((millis() - tempoAberturaAnterior) <= 20){
+      if (digitalRead(pinSensorMala)==HIGH){
+          return 0;
+      }
+    }
 
+    return 1;
+  }
+  
+  return aberto;
 }
 
+
 void reiniciar(){
+
    pararMotor();
    asm volatile ("   jmp 0");
 }
