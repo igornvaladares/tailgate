@@ -54,7 +54,7 @@ void setup() {
   pinMode(pinBeep, OUTPUT);
   
   beep();
-  delay(500);
+  delay(200);
   noBeep();
   // Configurar o pino do botão como entrada com PULLUP interno
   pinMode(pinAcaoExterna12V, INPUT_PULLUP);
@@ -74,7 +74,7 @@ void iniciarMovimento(  float tempoAteFimMovimento =TEMPO_MAXIMO_MOVIMENTACAO, i
   delay(250); //  debouce 
   motorEmMovimento = true;
   tempoCorrenteAnterior = millis(); // Evitar leitura inicial
-  calibrarSentidoMotor(abrir);  
+  sentidoMotor(abrir);  
   if (abrir) {
     abrirTailgate(tempoAteFimMovimento/2.0,forcaLimite,reversoes);// QUando diminui o tempoAteFimMovimento siginifica diminuir o tempo na força maxima
   } else {
@@ -145,10 +145,10 @@ void abrirTailgate(float tempoAteFimMovimento,int forcaLimite,int reversoes) {
     long forcaArrancadaFinal = 40;
     long tempoVariavel= 600;
     if (reversoes==0){
-       long tempoAceleracaoMaxima = 250; // Tempo até atingir a força máxima
+       long tempoAceleracaoMaxima = 750 ; // Tempo até atingir a força máxima
        if (obterTensaoDeTrabalho()> 12.5){
           tempoVariavel=0;
-          tempoAceleracaoMaxima = 1000;
+          tempoAceleracaoMaxima = 1250;
           
        }
        tempoDecorrido = acelerarMotor(tempoAceleracaoMaxima,255,reversoes); // 1000 ou 250
@@ -185,6 +185,20 @@ void fecharTailgate(  float tempoAteFimMovimento, int forcaLimite,int reversoes)
 
 }
 
+void freiar(float tempoAteFimMovimento, int forcaFreio) {
+
+    sentidoMotor(abrir);
+
+    Serial.print("Freiar  por:");
+    Serial.println(tempoAteFimMovimento);
+    int tempoDecorrido =0;
+    while (tempoDecorrido <= tempoAteFimMovimento && motorEmMovimento) {
+        beep();
+        ajustarVelocidade(255, 255,forcaFreio);  // Desacelera o motor
+        delay(frequenciaVelocidade);
+        tempoDecorrido += frequenciaVelocidade;  // Atualiza o tempo decorrido
+    }
+}
 
 long acelerarMotor(float tempoAteFimMovimento, int forcaLimite, int reversoes) {
    long tempoAceleracao = min(TEMPO_ACELERACAO_PADRAO,tempoAteFimMovimento);
@@ -358,22 +372,13 @@ float obterTensaoDeTrabalho(){
  
  }
 
-
-float contrololarTempoArranqueInicial(){
-
-   float tensaoTrabalho =  obterTensaoDeTrabalho();
-
-   return  tensaoTrabalho >= 12.2 ? 750 : 500;
-  
-}
-
  
-void calibrarSentidoMotor(bool abrindo){
+void sentidoMotor(bool abrindo){
 
     digitalWrite(L_PWM, !abrindo);
     digitalWrite(R_PWM, abrindo);
     
-  }
+}
 
 int lerEventoExterno(int pin_entrada) {
 
